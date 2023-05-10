@@ -26,7 +26,7 @@ import pyarrow.parquet as pq
 
 # unused HAS_GPU import is here for backwards compatibility
 from merlin.core.compat import HAS_GPU  # pylint: disable=unused-import # noqa: F401
-from merlin.core.compat import cudf
+from merlin.core.compat import cuda, cudf
 from merlin.core.compat import cupy as cp
 from merlin.core.protocols import DataFrameLike, DictLike, SeriesLike
 
@@ -567,6 +567,8 @@ def make_df(_like_df=None, device=None):
         if isinstance(_like_df, dict) and len(_like_df) > 0:
             if all(isinstance(v, pd.Series) for v in _like_df.values()):
                 return pd.DataFrame(_like_df)
+        device = device or 0
+        cuda.select_device(device)
         return cudf.DataFrame(_like_df)
 
 
@@ -621,7 +623,7 @@ def detect_format(data):
         return file_type
 
 
-def convert_data(x, cpu=True, to_collection=None, npartitions=1):
+def convert_data(x, cpu=True, to_collection=None, npartitions=1, device=None):
     """Move data between cpu and gpu-backed data.
 
     Note that the input ``x`` may be an Arrow Table,
@@ -631,6 +633,8 @@ def convert_data(x, cpu=True, to_collection=None, npartitions=1):
     objects will remain "serial").
     """
     if cpu:
+        if device is not None:
+            raise ValueError("Cannot use `device` with `cpu=True`.")
         if isinstance(x, dd.DataFrame):
             # If input is a dask_cudf collection, convert
             # to a pandas-backed Dask collection
@@ -645,6 +649,7 @@ def convert_data(x, cpu=True, to_collection=None, npartitions=1):
             # Output a collection if `to_collection=True`
             return dd.from_pandas(_x, sort=False, npartitions=npartitions) if to_collection else _x
     elif cudf and dask_cudf:
+        cuda.select_device(device)
         if isinstance(x, dd.DataFrame):
             # If input is a Dask collection, convert to dask_cudf
             if isinstance(x, dask_cudf.DataFrame):

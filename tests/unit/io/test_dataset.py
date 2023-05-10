@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import cupy
 import pandas as pd
 import pytest
 
@@ -49,3 +50,13 @@ class TestDatasetCpu:
     def test_false_missing_cudf_or_gpu(self):
         with pytest.raises(RuntimeError):
             Dataset(make_df({"a": [1, 2, 3]}), cpu=False)
+
+
+def test_dataset_multi_gpu():
+    dataset = Dataset(make_df({"a": [1, 2, 3]}), device=0)
+    df = dataset.compute()
+    assert int(df.to_cupy().device) == 0
+
+    dataset = Dataset(make_df({"a": [1, 2, 3]}, device=1), device=1)
+    df = dataset.compute()
+    assert int(df.to_cupy().device) == 1

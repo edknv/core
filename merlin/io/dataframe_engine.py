@@ -16,7 +16,7 @@
 from dask.dataframe.core import new_dd_object
 from dask.highlevelgraph import HighLevelGraph
 
-from merlin.core.compat import cudf, dask_cudf
+from merlin.core.compat import cudf, dask_cudf, cupy
 from merlin.io.dataset_engine import DatasetEngine
 
 
@@ -25,20 +25,18 @@ class DataFrameDatasetEngine(DatasetEngine):
     in the same way as a dataset on disk.
     """
 
-    def __init__(self, ddf, cpu=False, moved_collection=None):
+    def __init__(self, ddf, moved_collection=None, device=None):
         # we're not calling the constructor of the base class - since it has a bunch of
         # of parameters that assumes we're using files. TODO: refactor
         # pylint: disable=super-init-not-called
         self._ddf = ddf
-        self.cpu = cpu
         self.moved_collection = moved_collection or False
+        self.device = device or 0
 
-    def to_ddf(self, columns=None, cpu=None):
-        # Check if we are using cpu
-        cpu = self.cpu if cpu is None else cpu
-
+    def to_ddf(self, columns=None, device=None):
+        device = self.device if device is None else device
         # Move data from gpu to cpu if necessary
-        _ddf = self._move_ddf("cpu") if (cpu and not self.cpu) else self._ddf
+        _ddf = self._move_ddf("cpu") if (device == "cpu" and self.device != "cpu") else self._ddf
 
         if isinstance(columns, list):
             return _ddf[columns]
@@ -47,17 +45,17 @@ class DataFrameDatasetEngine(DatasetEngine):
         return _ddf
 
     def to_cpu(self):
-        if self.cpu:
+        if self.device == "cpu":
             return
         self._ddf = self._move_ddf("cpu")
-        self.cpu = True
+        self.device = "cpu"
         self.moved_collection = not self.moved_collection
 
-    def to_gpu(self):
-        if not self.cpu:
+    def to_gpu(self, device=0):
+        if self.device != "cpu":
             return
-        self._ddf = self._move_ddf("gpu")
-        self.cpu = False
+        self._ddf = self._move_ddf(device)
+        self.device = device
         self.moved_collection = not self.moved_collection
 
     @property
@@ -104,18 +102,22 @@ class DataFrameDatasetEngine(DatasetEngine):
                     key_dependencies=_ddf.dask.key_dependencies,
                 )
 
-                _meta = (
-                    _ddf._meta.to_pandas() if destination == "cpu" else cudf.from_pandas(_ddf._meta)
-                )
+                if destination == "cpu":
+                    _meta = _ddf._meta.to_pandas()
+                else:
+                    with cupy.cuda.Device(destination):
+                        _meta = cudf.from_pandas(_ddf._meta)
                 return new_dd_object(hlg, pandas_conversion_dep, _meta, _ddf.divisions)
 
         if destination == "cpu":
             # Just extend the existing graph to move the collection to cpu
             return _ddf.to_dask_dataframe()
 
-        elif destination == "gpu":
+        elif isinstance(destination, int):  # destination == "gpu"
             # Just extend the existing graph to move the collection to gpu
-            return dask_cudf.from_dask_dataframe(_ddf)
+            with cupy.cuda.Device(destination):
+                gdf = dask_cudf.from_dask_dataframe(_ddf)
+            return gdf
 
         else:
             raise ValueError(f"destination {destination} not recognized.")

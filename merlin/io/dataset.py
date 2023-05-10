@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2022, NVIDIA CORPORATION.
+# Copyright (c) 2023, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 #
 
 import collections
+import cupy
 import logging
 import math
 import random
@@ -204,6 +205,17 @@ class Dataset:
     schema : Schema
         Optional argument, to support custom user defined Schemas.
         This overrides the derived schema behavior.
+    device: str or int
+        "cpu" or index of the GPU device to use. The default value is 0, unless
+        ``cudf`` and ``dask_cudf`` are not installed (in which case the default
+        is "cpu").
+        WARNING: ``device="cpu"`` is an experimental feature!
+        If ``device="cpu"``, NVTabular keeps all data in CPU memory when the
+        Dataset is converted to an internal Dask collection. In the future,
+        if ``device="cpu"``, NVTabular will NOT use any available GPU devices
+        for down-stream processing.
+        NOTE: Down-stream ops and output do not yet support a Dataset generated
+        with ``device="cpu"``.
     **kwargs :
         Key-word arguments to pass through to Dask.dataframe IO function.
         For the Parquet engine(s), notable arguments include `filters`
@@ -223,6 +235,7 @@ class Dataset:
         cpu=None,
         base_dataset=None,
         schema=None,
+        device=None,
         **kwargs,
     ):
         if schema is not None and not isinstance(schema, Schema):
@@ -239,8 +252,20 @@ class Dataset:
         self._real_meta = {}
 
         # Check if we are keeping data in host or gpu device memory
-        self.cpu = cpu
-        if self.cpu is False:
+        if cpu is not None:
+            warnings.warn(
+                "The `cpu` argument is deprecated and will be removed in a "
+                "future version. To use CPU memory, replace `cpu=True` with "
+                "`device=\"cpu\"`. To use GPU memory, specify the integer "
+                "index of the device in `device`, e.g., `device=0`, "
+                "`device=1`, etc.",
+                DeprecationWarning,
+            )
+        device = device or 0
+        self.device = "cpu" if cudf is None or not HAS_GPU or cpu else int(device)
+        self.cpu = self.device == "cpu"
+
+        if self.device != "cpu":
             if not HAS_GPU:
                 raise RuntimeError(
                     "Cannot initialize Dataset on GPU. "
@@ -253,8 +278,6 @@ class Dataset:
                     "cudf package not found. "
                     "Check that cudf is installed in this environment and can be imported.  "
                 )
-        if self.cpu is None:
-            self.cpu = cudf is None or not HAS_GPU
 
         # Keep track of base dataset (optional)
         self.base_dataset = base_dataset or self
@@ -273,7 +296,7 @@ class Dataset:
             # User is passing in a <dask.dataframe|cudf|pd>.DataFrame
             # Use DataFrameDatasetEngine
             _path_or_source = convert_data(
-                path_or_source, cpu=self.cpu, to_collection=True, npartitions=npartitions
+                path_or_source, cpu=self.cpu, to_collection=True, npartitions=npartitions, device=self.device,
             )
             # Check if this is a collection that has now moved between host <-> device
             moved_collection = isinstance(path_or_source, dask.dataframe.DataFrame) and (
@@ -284,7 +307,7 @@ class Dataset:
             if part_mem_fraction:
                 warnings.warn("part_mem_fraction is ignored for DataFrame input.")
             self.engine = DataFrameDatasetEngine(
-                _path_or_source, cpu=self.cpu, moved_collection=moved_collection
+                _path_or_source, moved_collection=moved_collection, device=self.device,
             )
         else:
             if part_size:
@@ -379,7 +402,7 @@ class Dataset:
                 # df with no schema
                 self.infer_schema()
 
-    def to_ddf(self, columns=None, shuffle=False, seed=None):
+    def to_ddf(self, columns=None, shuffle=False, seed=None, device=None):
         """Convert `Dataset` object to `dask_cudf.DataFrame`
 
         Parameters
@@ -396,9 +419,11 @@ class Dataset:
             The random seed to use if `shuffle=True`.  If nothing
             is specified, the current system time will be used by the
             `random` std library.
+        device: int; Optoinal
         """
+        device = self.device if device is None else device
         # Use DatasetEngine to create ddf
-        ddf = self.engine.to_ddf(columns=columns)
+        ddf = self.engine.to_ddf(columns=columns, device=device)
 
         # Shuffle the partitions of ddf (optional)
         if shuffle and ddf.npartitions > 1:

@@ -33,6 +33,7 @@ class DatasetEngine:
         self.fs = fs
         self.fs_token = fs_token
         self.cpu = cpu
+        self.device = device
 
     def to_ddf(self, columns=None, cpu=None):
         raise NotImplementedError(""" Return a dask.dataframe.DataFrame or dask_cudf.DataFrame""")
